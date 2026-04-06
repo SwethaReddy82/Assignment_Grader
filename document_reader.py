@@ -1,0 +1,137 @@
+"""
+document_reader.py
+------------------
+Handles text extraction from PDF and DOCX files.
+Supports both single-file and batch (folder) reading.
+"""
+
+import os
+import re
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
+
+
+def extract_text_from_pdf(file_path: str) -> str:
+    """Extract plain text from a PDF file using pdfplumber."""
+    try:
+        import pdfplumber
+        text_parts = []
+        with pdfplumber.open(file_path) as pdf:
+            for i, page in enumerate(pdf.pages):
+                page_text = page.extract_text()
+                if page_text:
+                    text_parts.append(page_text)
+        return "\n\n".join(text_parts).strip()
+    except ImportError:
+        raise ImportError("pdfplumber is not installed. Run: pip install pdfplumber")
+    except Exception as e:
+        raise RuntimeError(f"Failed to read PDF '{file_path}': {e}")
+
+
+def extract_text_from_docx(file_path: str) -> str:
+    """Extract plain text from a DOCX file using python-docx."""
+    try:
+        from docx import Document
+        doc = Document(file_path)
+        paragraphs = []
+
+        # Extract paragraphs
+        for para in doc.paragraphs:
+            if para.text.strip():
+                paragraphs.append(para.text.strip())
+
+        # Extract text from tables too
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = " | ".join(
+                    cell.text.strip() for cell in row.cells if cell.text.strip()
+                )
+                if row_text:
+                    paragraphs.append(row_text)
+
+        return "\n\n".join(paragraphs).strip()
+    except ImportError:
+        raise ImportError("python-docx is not installed. Run: pip install python-docx")
+    except Exception as e:
+        raise RuntimeError(f"Failed to read DOCX '{file_path}': {e}")
+
+
+def read_document(file_path: str) -> str:
+    """
+    Auto-detect file type and extract text content.
+    Supports .pdf and .docx files.
+    """
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        return extract_text_from_pdf(file_path)
+    elif suffix in (".docx", ".doc"):
+        return extract_text_from_docx(file_path)
+    elif suffix in (".txt", ".md"):
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    else:
+        raise ValueError(
+            f"Unsupported file type '{suffix}'. Supported: .pdf, .docx, .txt, .md"
+        )
+
+
+def load_student_submissions(folder_path: str) -> List[Dict]:
+    """
+    Load all student submissions from a folder.
+
+    Returns a list of dicts:
+        [{"name": "Alice Johnson", "file": "alice_johnson.pdf", "text": "..."}, ...]
+    """
+    folder = Path(folder_path)
+    if not folder.is_dir():
+        raise NotADirectoryError(f"Submissions folder not found: {folder_path}")
+
+    supported_extensions = {".pdf", ".docx", ".doc", ".txt", ".md"}
+    submissions = []
+
+    for file_path in sorted(folder.iterdir()):
+        if file_path.suffix.lower() not in supported_extensions:
+            continue
+        if file_path.name.startswith("."):  # skip hidden files
+            continue
+
+        student_name = _infer_student_name(file_path.stem)
+        try:
+            text = read_document(str(file_path))
+            if not text.strip():
+                print(f"  ⚠️  Warning: '{file_path.name}' appears to be empty. Skipping.")
+                continue
+            submissions.append(
+                {
+                    "name": student_name,
+                    "file": file_path.name,
+                    "file_path": str(file_path),
+                    "text": text,
+                }
+            )
+        except Exception as e:
+            print(f"  ⚠️  Could not read '{file_path.name}': {e}")
+
+    return submissions
+
+
+def _infer_student_name(stem: str) -> str:
+    """
+    Turn a filename stem into a readable student name.
+    e.g. 'alice_johnson_assignment1' → 'Alice Johnson'
+         'john-doe'                  → 'John Doe'
+    """
+    # Remove common suffixes like _assignment1, _submission, _hw1
+    stem = re.sub(
+        r"[_\-]?(assignment|submission|hw|homework|project|lab|task)\d*.*$",
+        "",
+        stem,
+        flags=re.IGNORECASE,
+    )
+    # Replace underscores/hyphens with spaces and title-case
+    name = stem.replace("_", " ").replace("-", " ").strip().title()
+    return name if name else stem
